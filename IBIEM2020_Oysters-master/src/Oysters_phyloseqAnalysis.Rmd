@@ -1,0 +1,109 @@
+---
+title: "Oysters_phyloseqAnalysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(vegan)
+library(tidyverse)
+```
+
+# Read in Data
+```{r}
+ps.oysters.filename <- "/sharedspace/oysters/output/ps.oysters.withtree.rds"
+ps.pre <- read_rds(ps.oysters.filename)
+```
+
+```{r}
+#ps.pre %>%
+#  subset_samples(!Original.Sample.Name %in% c("C1","C2")) %>%
+#    filter_taxa(function(x) sum(x > 0) > 1, TRUE) ->ps.1
+
+#table(tax_table(ps.pre)[, "Kingdom"], exclude = NULL)
+#table(tax_table(ps.1)[, "Kingdom"], exclude = NULL)
+```
+
+# Filter Samples and Taxa
+```{r}
+ps.pre %>% 
+  subset_samples(!Original.Sample.Name %in% c("B8","C1","C2")) %>%
+  filter_taxa(function(x) sum(x > 0) > 1, TRUE) %>% #at least two samples have the ASV
+  subset_taxa(Kingdom == "Bacteria") %>%
+  subset_taxa(!is.na(Phylum)) %>%
+  subset_taxa(Order != "Chloroplast" | is.na(Order)) -> 
+  ps
+```
+
+```{r}
+table(tax_table(ps)[, "Kingdom"], exclude = NULL)
+```
+
+```{r}
+# Compute prevalence of each feature, store as data.frame
+prevdf = apply(X = otu_table(ps),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps),
+                    tax_table(ps))
+plyr::ddply(prevdf, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+```
+
+```{r}
+# Subset to the remaining phyla
+ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps),color=Phylum)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+
+```{r}
+ps %>% sample_data
+```
+
+# Tree agglommeration
+```{r}
+ps %>% 
+  subset_samples(Description == "Oyster Shells on the Natural Reef") %>%
+  filter_taxa(function(x) sum(x > 0) > 1, TRUE) -> 
+  ps.natShell
+
+table(tax_table(ps.natShell)[, "Family"], exclude = NULL)
+ps_agglom <- tax_glom(ps.natShell, taxrank="Family")
+ps_agglom
+```
+
+
+```{r}
+plot_tree(ps_agglom,label.tips = "Family", ladderize="left", color = "Phylum")
+ggsave("../tree.pdf")
+```
+
+```{r}
+ps.rel  <- transform_sample_counts(ps, function(x) x / sum(x) )
+ps.rel %>%
+  subset_samples(Description %in% c("Oyster Shells on the Natural Reef","Small Oyster Shells On Farm")) %>%
+  subset_taxa(Phylum == "Cyanobacteria") %>%
+  plot_bar(x = "Sample", fill="Family") +
+  geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack") +
+  facet_grid(~Type+Location,scales = "free_x", space = "free_x") +
+  theme_minimal() 
+
+ggsave("../Cyanobacteria.png")
+```
+
+```{r}
+
+```
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,448 @@
+---
+title: "Oysters_phylofactor"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(vegan)
+library(tidyverse)
+```
+
+```{r}
+ps.oysters.filename <- "/sharedspace/oysters/output/ps.oysters.withtree.rds"
+```
+
+```{r}
+ps.pre <- read_rds(ps.oysters.filename)
+```
+
+```{r}
+ps.pre %>% sample_data
+```
+
+```{r}
+ps.pre %>% subset_samples(!Original.Sample.Name %in% c("B8","C1","C2")) -> ps
+```
+
+
+```{r}
+filter_taxa(ps, function(x) sum(x > 0) > 1, TRUE) -> ps.filter
+subset_taxa(ps.filter, Kingdom != "Eukaryota") -> ps.subset
+subset_taxa(ps.subset, Order != "Chloroplast") -> ps.nochloroplast
+ps.nochloroplast
+```
+
+```{r}
+plot_tree(ps.nochloroplast, color = "Type", ladderize = "left")
+```
+
+```{r}
+plot_tree(ps.nochloroplast, "treeonly", nodeplotblank, ladderize = "left")
+```
+
+```{r}
+plot_tree(ex1, color = "Description", label.tips = "Phylum", ladderize = "left", justify = "left" , size = "Abundance")
+```
+
+```{r}
+sample_data(ps)$Description %>% as.factor -> a
+levels(a)
+a = factor(a,levels(a)[c(1,2,5,4,3)])
+levels(a)
+sample_data(ps)$Description <- a
+sample_data(ps)$Description
+sample_data(ps)$Location <-  str_replace(sample_data(ps)$Location,"DUML","Natural")
+
+plot_richness(ps, x = "Description", col = "Location", measures = c("Observed","Chao1","ACE","Shannon")) + 
+  geom_boxplot() + 
+  theme_classic() +
+  theme(axis.text.x = element_blank()) +
+  theme(legend.position = "none") +
+  scale_color_manual(values=c("#999999", "#8D021F", "#56B4E9"))
+ggsave("/sharedspace/oysters/output/graphs/alphadiversity.pdf", width = 14, height = 7 )
+```
+
+```{r}
+ps %>% sample_data
+```
+
+```{r}
+table(tax_table(ps)[, "Kingdom"], exclude = NULL)
+ps <- subset_taxa(ps, !is.na(Kingdom))
+table(tax_table(ps)[, "Kingdom"], exclude = NULL)
+```
+
+
+```{r}
+ps <- prune_samples(!sample_names(ps) %in% c(228,229), ps)
+```
+
+```{r}
+ps
+```
+
+```{r}
+# Compute prevalence of each feature, store as data.frame
+prevdf = apply(X = otu_table(ps),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps),
+                    ASV = rownames(tax_table(ps)),
+                    tax_table(ps))
+```
+
+```{r}
+colnames(prevdf) 
+```
+
+```{r}
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps, "Phylum"))
+ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(ps),color=Phylum)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+
+```{r}
+# Define prevalence threshold as 5% of total samples
+prevalenceThreshold = 0.05 * nsamples(ps)
+prevalenceThreshold
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps2 = prune_taxa(keepTaxa, ps)
+```
+
+```{r}
+prevdf2 = apply(X = otu_table(ps2),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf2 = data.frame(Prevalence = prevdf2,
+                    TotalAbundance = taxa_sums(ps2),
+                    tax_table(ps2))
+ggplot(prevdf2, aes(TotalAbundance, Prevalence / nsamples(ps2),color=Phylum)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+
+```{r}
+plyr::ddply(prevdf2, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+```
+
+```{r}
+h1 = 0.4
+ps4 = tip_glom(ps2, h = h1)
+```
+
+```{r}
+multiPlotTitleTextSize = 15
+p2tree = plot_tree(ps2, method = "treeonly",
+                   ladderize = "left",
+                   title = "Before Agglomeration") +
+  theme(plot.title = element_text(size = multiPlotTitleTextSize))
+
+p4tree = plot_tree(ps4, method = "treeonly",
+                   ladderize = "left", title = "By Height") +
+  theme(plot.title = element_text(size = multiPlotTitleTextSize))
+
+gridExtra::grid.arrange(nrow = 1, p2tree, p4tree)
+```
+
+```{r}
+ps4
+```
+
+```{r}
+plot_abundance = function(physeq,title = "",
+                          Facet = "Order", Color = "Phylum"){
+  # Arbitrary subset, based on Phylum, for plotting
+  p1f = subset_taxa(physeq, Phylum %in% c("Firmicutes"))
+  mphyseq = psmelt(p1f)
+  mphyseq <- subset(mphyseq, Abundance > 0)
+  ggplot(data = mphyseq, mapping = aes_string(x = "Type",y = "Abundance",
+                              color = Color, fill = Color)) +
+    geom_violin(fill = NA) +
+    geom_point(size = 1, alpha = 0.3,
+               position = position_jitter(width = 0.3)) +
+    facet_wrap(facets = Facet) + scale_y_log10()+
+    theme(legend.position="none")
+}
+```
+
+```{r}
+# Transform to relative abundance. Save as new object.
+ps2ra = transform_sample_counts(ps2, function(x){x / sum(x)})
+```
+
+```{r}
+plotBefore = plot_abundance(ps2,"",Facet = "Phylum")
+plotAfter = plot_abundance(ps2ra,"",Facet = "Phylum")
+# Combine each plot into one graphic.
+gridExtra::grid.arrange(nrow = 2,  plotBefore, plotAfter)
+```
+
+```{r}
+ps %>% sample_data
+```
+
+```{r}
+pslog <- transform_sample_counts(ps, function(x) log(1 + x))
+out.wuf.log <- ordinate(pslog, method = "MDS", distance = "wunifrac")
+evals <- out.wuf.log$values$Eigenvalues
+plot_ordination(pslog, out.wuf.log, color = "Type") +
+  labs(col = "Type") +
+  geom_text(aes(label=Original.Sample.Name),hjust=0, vjust=0) +
+  coord_fixed(sqrt(evals[2] / evals[1])) +
+  theme_minimal()
+```
+## What is going on with B8? Looks similar...
+```{r}
+ps2 %>% subset_samples(Description == "Oyster Bag on the Farm (holds sampled oysters)") -> ps.bags
+ps.rel <- transform_sample_counts(ps.bags, function(x){x / sum(x)})
+plot_bar(ps.rel, x = "Original.Sample.Name", fill="Phylum") +
+  geom_bar(aes(color=Phylum, fill=Phylum), stat="identity", position="stack")
+
+```
+
+```{r}
+pslog <- transform_sample_counts(ps, function(x) log(1 + x))
+out.pcoa.log <- ordinate(pslog,  method = "MDS", distance = "bray")
+evals <- out.pcoa.log$values[,1]
+plot_ordination(pslog, out.pcoa.log, color = "Description",
+                  shape = "Type") +
+  labs(col = "Type", shape = "Type")+
+  coord_fixed(sqrt(evals[2] / evals[1]))
+```
+
+```{r}
+out.wuf.log <- ordinate(pslog, method = "PCoA", distance ="wunifrac")
+evals <- out.wuf.log$values$Eigenvalues
+plot_ordination(pslog, out.wuf.log, color = "Description") +
+  coord_fixed(sqrt(evals[2] / evals[1])) +
+  labs(col = "Binned Age", shape = "Litter") +
+  theme_minimal() +
+  stat_ellipse(type = "norm") 
+ggsave("/sharedspace/oysters/output/graphs/PCoA.pdf")
+```
+
+#Canonical Correspondance
+
+```{r}
+ps_ccpna <- ordinate(pslog, "CCA", formula = pslog ~ Type + Location)
+```
+```{r}
+library(ggrepel)
+ps_scores <- vegan::scores(ps_ccpna)
+sites <- data.frame(ps_scores$site)
+sites$SampleID <- rownames(sites)
+sampleInfo <- sample_data(ps) %>% as.data.frame %>% rownames_to_column()
+sampleInfo %>% select(rowname,Type,Location) -> sampleInfo
+sampleInfo <- data.frame(
+Type = sample_data(ps)$Type,
+rowname = rownames(sample_data(ps)),
+Location = sample_data(ps)$Location,
+Description = sample_data(ps)$Description)
+sites <- sites %>%
+  left_join(sampleInfo, by = "rowname")
+
+species <- data.frame(ps_scores$species)
+species$otu_id <- seq_along(colnames(otu_table(ps)))
+species <- species %>% rownames_to_column()
+tax_table(ps) %>% as.data.frame %>% rownames_to_column -> tax_ref
+species <- species %>%
+  left_join(tax)
+
+
+evals_prop <- 100 * ps_ccpna$CCA$eig[1:2] / sum(ps_ccpna$CA$eig)
+ggplot() +
+  geom_point(data = sites, aes(x = CCA1, y = CCA2, col = Description), shape = 2, alpha = 0.5) +
+  geom_point(data = species, aes(x = CCA1, y = CCA2), size = 0.5) +
+  guides(col = guide_legend(override.aes = list(size = 3))) +
+  labs(x = sprintf("Axis1 [%s%% variance]", round(evals_prop[1], 2)),
+        y = sprintf("Axis2 [%s%% variance]", round(evals_prop[2], 2))) +
+  scale_color_brewer(palette = "Set2") +
+  coord_fixed(sqrt(ps_ccpna$CCA$eig[2] / ps_ccpna$CCA$eig[1])*0.45   ) +
+  theme(panel.border = element_rect(color = "#787878", fill = alpha("white", 0)))
+
+species %>% head
+
+```
+
+```{r}
+library(randomForest)
+```
+
+
+
+```{r}
+library(phylofactor)
+```
+
+```{r}
+ps %>% sample_data()
+ps %>% subset_samples(Type == "Shell") -> ps.shells
+ps %>% sample_data() %>% mutate_if(is.character,str_replace_all,"DUML","Natural") -> sample2
+sample2
+```
+
+```{r}
+x <- t(otu_table(ps))
+x[1:2,1]
+```
+```{r}
+sample2 %>% select(Type,Location) %>% mutate(Type = as.factor(Type), Location = as.factor(Location)) -> sample2
+ps.shells <- ps %>% subset_samples(Type=="Shell")
+ps.shells %>% sample_data() %>% select(Location) -> a
+a$Location %>% as.factor -> shell.loc
+```
+
+```{r}
+
+PF <- PhyloFactor(t(otu_table(ps.shells)),
+                  phy_tree(ps.shells),
+                  X = shell.loc,
+                  nfactors=3)
+```
+
+```{r}
+sample2
+```
+
+```{r}
+PF.double <- PhyloFactor(t(otu_table(ps)),
+                  phy_tree(ps),
+                  X = sample2,
+                  frmla = Data ~ Type * Location,
+                  nfactors=3)
+
+PF2 <- PhyloFactor(t(otu_table(ps.shells)),
+                  phy_tree(ps.shells),
+                  shell.loc)
+
+PF.double2 <- PhyloFactor(t(otu_table(ps)),
+                  phy_tree(ps),
+                  X = sample2,
+                  frmla = Data ~ Type * Location)
+```
+
+```{r}
+names(PF.double)
+```
+
+```{r}
+PF.double$factors
+PF.double$glms[[1]]
+```
+
+```{r}
+library(ALDEx2)
+```
+
+
+```{r}
+library(vegan)
+ps%>%
+  sample_data %>%
+  as("data.frame") ->
+  ps.metadata
+
+ps %>%
+  phyloseq::distance(method="bray") ->
+  ps.bray
+
+adonis(ps.bray ~ Location * Type,
+       data = ps.metadata) ->
+  loctype.adonis
+
+print(loctype.adonis)
+```
+
+```{r}
+ps.shells@tax_table@.Data -> taxonomy
+taxonomy %>% as.data.frame %>% unite(tax_info,Kingdom:Genus,sep="_") %>%
+  rownames_to_column() ->
+  taxonomy
+```
+
+```{r}
+smry <- pf.summary(PF, taxonomy,factor=1)
+pf.tidy(smry)
+```
+
+
+```{r}
+library(phytools)
+clr <- function(Matrix) apply(Matrix,MARGIN=2,FUN=function(x) log(x)-mean(log(x)))
+
+par(mfrow=c(1,1))
+phylo.heatmap(tree,clr(PF.double$Data))
+```
+
+```{r}
+par(mfrow=c(1,2))
+plot(shell.loc,smry$ilr,main='Isometric log-ratio',ylab='ILR balance')
+plot(shell.loc,smry$MeanRatio,main='Ratio of Geometric Means',ylab='Group1/Group2')
+```
+```{r}
+td <- pf.tidy(smry)
+predicted.ratio <- td$`Predicted ratio of group1/group2`
+predicted.ratio
+```
+
+```{r}
+smry$TaxaSplit %>%
+      lapply(.,FUN=function(x) unique(x$TaxaIDs))  
+```
+
+```{r}
+factored.edge <- getFactoredEdges(PF$basis[,1],tree) 
+factored.edges <- getFactoredEdgesPAR(ncores=3,PF=PF) #Parallel; gets all factored edges
+```
+
+```{r}
+bin.projection <- pf.BINprojection(PF,factor=3) 
+bin.projection.pred <- pf.BINprojection(PF,prediction=T)
+bin.taxa <- bin.projection$otus %>% 
+              lapply(.,FUN=function(otus,tax) OTUtoTaxa(otus,tax,common.name = F),tax=taxonomy)
+bin.taxa[2:4]
+```
+
+```{r}
+bin.observed.geometricMeans <- pf.BINprojection(PF)$Data
+bin.observed.relativeAbundances <- pf.BINprojection(PF,rel.abund=T)$Data
+bin.predicted.geometricMeans <- pf.BINprojection(PF,prediction=T)$Data
+bin.predicted.relativeAbundances <- pf.BINprojection(PF,prediction=T,rel.abund=T)$Data
+
+library(plotrix)
+par(mfrow=c(2,2))
+stackpoly(t(bin.observed.geometricMeans),stack=T,main='Observed gMean',xat = c(10,30),xaxlab = c('Natural','Farm'))
+stackpoly(t(bin.predicted.geometricMeans),stack=T,main='Predicted gMean',xat = c(10,30),xaxlab = c('Natural','Farm'))
+
+stackpoly(t(bin.observed.relativeAbundances),stack=T,main='Observed Rel-Abund.',xat = c(10,30),xaxlab = c('Natural','Farm'))
+stackpoly(t(bin.predicted.relativeAbundances),stack=T,main='Predicted Rel-Abund.',xat = c(10,30),xaxlab = c('Natural','Farm'))
+```
+
+```{r}
+library(ape)
+set.seed(4)
+demo.tree <- rtree(4)
+par(mfrow=c(1,1))
+plot.phylo(demo.tree,use.edge.length = F,show.tip.label = F,main='Demo Phylogeny')
+tiplabels(cex=2)
+edgelabels(cex=2)
+```
+
+
+```{r}
+sessionInfo()
+```
+

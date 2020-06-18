@@ -1,0 +1,297 @@
+---
+title: "Oysters_DADA2"
+author: "Winston Liu"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data storage
+Downloaded from sequencing core into /sharedspace/oysters/data
+
+#Libraries
+```{r}
+library(readr)
+library(fs)
+library(R.utils)
+library(tidyverse)
+library(stringr)
+library(phyloseq)
+library(ggplot2)
+library(dada2)
+library(magrittr)
+```
+
+# INPUTS
+Folder names:
+```{r}
+baseFolder <- "/sharedspace/oysters/data"
+oyster.sample.data <- "/sharedspace/oysters/ref/ibiem_oyster_sample_key.csv"
+
+outputFiltered <- "/sharedspace/oysters/scratch/filtered"
+output.dir <- "/sharedspace/oysters/output"
+ps.file <- file.path(output.dir,"ps_oysters_rdp.rds")
+track.file <- file.path(output.dir,"track_oysters_rdp.rds")
+seqtab.file <- file.path(output.dir,"seqtab_nochim_rdp.rds")
+```
+
+Read in the files:
+```{r}
+R1.fileName <- list.files(baseFolder, pattern = "R1_001.fastq.gz")
+```
+
+# SAMPLE TABLE
+```{r}
+R2.fileName <- str_replace(R1.fileName,"R1","R2")
+sampleInfo <- data.frame(R1.fileName, R2.fileName)
+sampleInfo %<>%
+  separate(R1.fileName, into = "sampleName", sep = "_", remove=FALSE)
+```
+
+# View quality profiles
+```{r}
+i<-10
+plotQualityProfile(file.path(baseFolder, sampleInfo$R1.fileName[i]))
+plotQualityProfile(file.path(baseFolder, sampleInfo$R2.fileName[i]))
+```
+
+# Perform filtering and trimming
+
+### Generate filenames for the filtered fastq.gz files.
+You need to use the names of the raw (demultiplexed) FASTQ files to generate a vector of names for the filtered FASTQs.  You need separate vectors for the forward and reverse reads.  It is a very good idea to put all the filtered FASTQs in their own directory.
+```{r}
+filtFs <- file.path(outputFiltered , paste0(sampleInfo$sampleName, "_F_filt.fastq.gz"))
+filtRs <- file.path(outputFiltered , paste0(sampleInfo$sampleName, "_R_filt.fastq.gz"))
+fnFs <- file.path(baseFolder,as.character(sampleInfo$R1.fileName))
+fnRs <- file.path(baseFolder,as.character(sampleInfo$R2.fileName))
+```
+
+
+### Filter the forward and reverse reads
+Now let's do the filtering using the parameters we chose based on the quality plots
+```{r}
+filt.out <- filterAndTrim(fwd = fnFs, filt = filtFs, rev = fnRs, filt.rev = filtRs, trimLeft=10, truncLen=c(245,225),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=FALSE) # On Windows set multithread=FALSE
+filt.out
+```
+### Tweak Filtered FASTQ list
+There are a few samples that have very few reads to start with and no reads after filtering. If a sample doesn't have any reads after filtering, `filterAndTrim` doesn't bother to make an empty filtered FASTQ.  We need to manage this, because downstream steps will give us an error if we give them a list of filtered FASTQ filenames that contains names of files that don't actually exist.  We need to regenerate our list of filtered FASTQs based on the filtered FASTQ files that are actually present in the directory. We also need to regenerate `sample.names` from the list of filtered FASTQ files
+```{r}
+filtFs <- filtFs[file_exists(filtFs)]
+filtRs <- filtRs[file_exists(filtRs)]
+sample.names <- filtFs  %>% 
+  basename %>%
+  str_replace("_F_filt.fastq.gz","") 
+```
+
+```{r}
+
+```
+
+
+## Learn the Error Rates
+With that bit of cleanup done, we are ready to build an error model from the filtered FASTQs.  We do this seperately for the R1 and R2 FASTQs, since they have different patterns of errors, as we have seen.
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+
+It is always worthwhile, as a sanity check if nothing else, to visualize the estimated error rates:
+```{r}
+plotErrors(errF, nominalQ=TRUE)
+plotErrors(errR, nominalQ=TRUE)
+```
+
+The error rates for each possible transition (eg. A->C, A->G, ...) are shown. Points are the observed error rates for each consensus quality score. The black line shows the estimated error rates after convergence. The red line shows the error rates expected under the nominal definition of the Q-value. Here the black line (the estimated rates) fits the observed rates well, and the error rates drop with increased quality as expected. 
+
+Since we are using a small subset of the data, the learned error rates might look funny.  This is OK for now, since we are just doing a pilot analysis.
+
+## Dereplication
+
+Dereplication combines all identical sequencing reads into "unique sequences" with a corresponding "abundance" tally: the number of reads with that unique sequence. Dereplication substantially reduces computation time for the inference step, since we only need to do inference for unique sequences.  
+
+```{r}
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+```
+### Rename derep objects
+`derepFastq` returns a list of derep objects that are named based on the input filename.  For later steps it is going to be more convenient if each derep object is named with just it's sample name, so let's rename the derep objects using the sample name vector that we created earlier.
+```{r}
+names(derepFs) <- sampleInfo$sampleName
+names(derepRs) <- sampleInfo$sampleName
+```
+
+## Sample Inference
+
+Now you need to infer the true sequences from the dereplicated data. 
+
+```{r}
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+```
+
+## Merge paired reads
+Each pair of R1 and R2 reads represents one observed sequence, so we ultimately need to combine them into a single sequence.  The paired reads allows us to reduce sequence error where the reads overlap because that part of the insert has been sequenced twice so we can compare the two sequences and be sure they agree.  This is why it is desireable to have reads that overlap as much as possible.
+
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+```
+The results of `mergePairs` is a list of data frames with one data frame for each sample.  Each data frame contains the unique merged sequences observed for that sample along with information about each sequence.
+
+Paired reads that did not perfectly match in the overlapping region were removed by `mergePairs`.
+
+## Construct sequence table
+
+We can now construct a sequence table of our samples.  This the equivalent of the OTU table produced by other methods.  The sequence table has a row for each sample and a column for each ASV (the DADA2 equivalent of an OTU), with the count of the number of each ASV observed in each sample.
+```{r}
+seqtab <- makeSequenceTable(mergers)
+```
+
+
+Let's check the dimensions of the sequence table.  How many samples are there?  How many ASVs?
+*There are 107 samples, and 239 ASVs.*
+```{r}
+dim(seqtab)
+```
+
+Let's check the size distribution of the ASVs we have inferred. 
+```{r}
+table(nchar(getSequences(seqtab)))
+```
+ In most bacteria the amplicon is 253bp, but there is some variation in the length of the V4 region, so we expect some amplicons to be a few bp shorter and longer.  *Note* the ASVs will be shorter by the total amount that you trimmed from the left (5') of the reads, so if you trimmed 5bp from the left of the R1 reads and 7bp from the left of the R2 reads, you expect the amplicons to be about 253bp - 5bp - 7bp = 241bp.
+ 
+## Remove chimeras
+
+The core `dada` method removes substitution and indel errors, but chimeras remain. Fortunately, the accuracy of the sequences after denoising makes identifying chimeras simpler than it is when dealing with fuzzy OTUs: all sequences which can be exactly reconstructed as a bimera (two-parent chimera) from more abundant sequences.  Let's remove chimeric sequences
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+write_rds(seqtab.nochim,seqtab.file)
+```
+
+
+## Track reads through the pipeline
+
+As a final check let's make a table showing how many reads remain after each step in the pipeline for each sample.
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- filt.out %>%
+  as.data.frame %>%
+  rownames_to_column %>%
+  mutate(rowname=str_replace(rowname, "_R1_001.fastq.gz","")) %>%
+  separate(rowname, into = "rowname2", sep = "_") %>%
+  rename(sample=rowname2, input=reads.in, filtered=reads.out)
+
+dadaFs %>%
+  sapply(getN) %>%
+  as_tibble(rownames = NA) %>%
+  rownames_to_column %>%
+  rename(sample=rowname, denoised=value) ->
+  denoised
+
+track %<>% full_join(denoised, by=c("sample"))
+
+mergers %>%
+  sapply(getN) %>%
+  data.frame %>%
+  rownames_to_column %>%
+  rename(sample=rowname, merged='.') ->
+  merged
+
+track %<>% full_join(merged, by=c("sample"))
+
+
+seqtab %>%
+  rowSums %>%
+  data.frame %>%
+  rownames_to_column() %>%
+  rename(sample=rowname, tabled = '.') -> 
+  tabled
+#   denoised
+
+track %<>% full_join(tabled, by=c("sample"))
+
+seqtab.nochim %>%
+  rowSums %>%
+  data.frame %>%
+  rownames_to_column() %>%
+  rename(sample=rowname, nochim='.') -> 
+  nochim
+
+track %<>% full_join(nochim, by=c("sample"))
+
+track %>%
+  arrange(as.numeric(sample))
+
+write_rds(track, track.file)
+```
+
+
+This is a great place to do a last **sanity check**. Outside of filtering (depending on how stringent you want to be) there should no step in which a majority of reads are lost. If a majority of reads failed to merge, you may need to revisit the `truncLen` parameter used in the filtering step and make sure that the truncated reads span your amplicon. If a majority of reads failed to pass the chimera check, you may need to revisit the removal of primers, as the ambiguous nucleotides in unremoved primers interfere with chimera identification.</div>
+
+
+## Assign taxonomy
+
+```{r}
+rdp.ref <- '/sharedspace/oysters/ref/rdp_train_set_16.fa.gz'
+taxa <- assignTaxonomy(seqtab.nochim, rdp.ref, multithread=TRUE)
+```
+
+# Phyloseq
+We are now done we the DADA2 pipeline.  Let's put the results into a phyloseq object and save it to an RDS for safe keeping!
+
+## Map Data
+First we need to load the map data using phyloseq's `sample_data()` function. `sample_data()` expects the sample identifiers to be rownames, but our map file has them as a column named "#SampleID", so we need to use a function called `column_to_rownames` to convert this column into rownames
+
+## Make a Phyloseq Object
+Now we can construct a phyloseq object directly from the dada2 outputs and the map data frame.
+```{r}
+otus = otu_table(seqtab.nochim, taxa_are_rows=FALSE)
+
+sd <- read_csv(oyster.sample.data) %>%
+  column_to_rownames("sample") %>%
+  sample_data ->
+  oysters.sd.clean
+
+ps <- phyloseq(otus,
+               sample_data(sd),
+               tax_table(taxa))
+```
+
+And `print` your phyloseq object to be sure it was created correctly
+```{r}
+print(ps)
+```
+
+Your results from the previous chunk should look like this (number of taxa could be different depending on parameter choices): 
+```
+phyloseq-class experiment-level object
+otu_table()   OTU Table:         [ 234 taxa and 107 samples ]
+sample_data() Sample Data:       [ 107 samples by 17 sample variables ]
+tax_table()   Taxonomy Table:    [ 234 taxa by 6 taxonomic ranks ]
+```
+
+## Save Phyloseq to RDS
+Any R object can be saved to an RDS file.  It is a good idea to do this for any object that is time consuming to generate and is reasonably small in size.  Even when the object was generated reproducibly, it can be frustrating to wait minutes or hours to regenerate when you are ready to perform downstream analyses.
+
+We will do this for our phyloseq object to a file since it is quite small (especially compared to the size of the input FASTQ files), and there were several time consuming computational steps required to generate it.  
+```{r}
+write_rds(ps, ps.file)
+```
+
+## Check Phyloseq RDS
+
+We can now confirm that it worked.  Load your phyloseq RDS and `print` it. The results should be the same as above.
+```{r}
+print(read_rds(ps.file))
+```
+
+
+```{r}
+sessionInfo()
+```
+

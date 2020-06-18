@@ -1,0 +1,162 @@
+---
+title: "Oysters_LefSE"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(phyloseq)
+library(tibble)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(fs)
+```
+
+```{r}
+ps.oysters.filename <- "/sharedspace/oysters/output/ps.oysters.withtree.rds"
+outdir <- path.expand("/sharedspace/oysters/output/lefse")
+ps.oysters.filename %>%
+  path_file %>%
+  path_ext_remove %>%
+  path(outdir, .) ->
+  output_basename 
+lefse.input.file = path_ext_set(output_basename, ".tsv")
+Sys.setenv(LEFSE_INPUT_FILE=lefse.input.file)
+Sys.setenv(OUTDIR=outdir)
+Sys.setenv(BASENAME=output_basename)
+
+# NORMALIZATION=""
+Sys.setenv(NORMALIZATION="-o 1000000")
+Sys.setenv(PLOT_FORMAT="pdf")
+
+```
+
+```{r}
+ps.pre <- read_rds(ps.oysters.filename)
+ps.pre %>% 
+  subset_samples(!Original.Sample.Name %in% c("B8","C1","C2")) %>%
+  filter_taxa(function(x) sum(x > 0) > 1, TRUE) %>% #at least two samples have the ASV
+  subset_taxa(Kingdom == "Bacteria") %>%
+  subset_taxa(!is.na(Phylum)) %>%
+  subset_taxa(Order != "Chloroplast" | is.na(Order)) -> 
+  ps
+```
+
+# Define functions
+```{r}
+#' RepseqToTaxa:
+#' Convert Repseq column names to Taxa column names in a spread data frame
+#' The big problem here is that this needs to be done after all other 
+#' manipulations to the dataframe, otherwise most functions will balk if there
+#' are dataframe columns with identical names
+#'
+#' @param spread.df The dataframe generated from phyloseq object.
+#' @param source.ps phyloseq object from which spread.df was derived.
+RepseqToTaxa <- function(spread.df, source.ps) {
+  tax.df = as.data.frame(tax_table(source.ps)) %>%
+    rownames_to_column("repseq") %>%
+    mutate(taxonomy = paste(Kingdom,Phylum,Class,Order,Family,Genus, sep="|")) %>%
+    select(repseq, taxonomy)
+  
+  # need to preserve non-OTU column names (otherwise they get lost)
+  colname_match = match(names(spread.df), tax.df$repseq)
+  cols_to_keep = which(is.na(colname_match))
+  colnames_to_keep = names(spread.df)[cols_to_keep]
+  
+  # replace repseqs with taxonomies
+  names(spread.df) = tax.df$taxonomy[match(names(spread.df), tax.df$repseq)]
+  # now reset the non-OTU column names
+  names(spread.df)[cols_to_keep] = colnames_to_keep
+  return(spread.df)
+}
+
+GenerateLefseOutput = function(ps,output_columns,outfile){
+  if(length(output_columns)==1){
+    format.flags="-f c -u 1 -c 2"
+  }else if(length(output_columns)==2){
+    format.flags="-f c -u 1 -c 2 -s 3"
+  }else{
+    stop("output_columns must be a vector of length 1 or 2")
+  }
+  base_columns = c("SampleID","OTU","Abundance")
+  spread.df = psmelt(ps) %>% 
+    mutate(SampleID = str_replace(Sample, pattern="\\.", replacement="_")) %>%
+    mutate(taxonomy = paste(Kingdom,Phylum,Class,Order,Family,Genus, sep="|")) %>%
+    select(one_of(c(base_columns,output_columns))) %>%
+    spread(OTU, Abundance)
+  
+  RepseqToTaxa(spread.df, ps) %>%
+    write.table(file=outfile, 
+                sep="\t", quote = FALSE,
+                row.names = FALSE)
+  
+  return(format.flags)
+}
+```
+
+```{r}
+ps.subset <- ps %>% subset_samples(Type == "Shell") %>% filter_taxa(function(x) sum(x > 0) > 0, TRUE) 
+grouping_parameter="Location"
+format.flags = GenerateLefseOutput(ps.subset, grouping_parameter, lefse.input.file)
+Sys.setenv(FORMAT_FLAGS=format.flags)
+```
+
+# Format data for Lefse
+```{bash}
+format_input.py $LEFSE_INPUT_FILE  "${BASENAME}.in" $FORMAT_FLAGS $NORMALIZATION  --output_table ${BASENAME}.tab
+```
+
+# Run Lefse
+```{bash}
+run_lefse.py "${BASENAME}.in" ${BASENAME}.res
+```
+
+# Generate Bar Plot
+
+```{bash}
+plot_res.py --subclades -1 --format ${PLOT_FORMAT} ${BASENAME}.res ${BASENAME}.${PLOT_FORMAT}
+
+```
+
+```{r}
+lefse.bar = path_ext_set(output_basename, ".pdf")
+cat(paste0("![Barplot of taxa associated with ", grouping_parameter, "](", lefse.bar, ")"), fill = FALSE)
+```
+
+# Generate cladogram plot of significant taxa
+
+```{bash}
+plot_cladogram.py ${BASENAME}.res ${BASENAME}.cladogram.${PLOT_FORMAT} --format ${PLOT_FORMAT}
+```
+
+```{r}
+lefse.cladogram = path_ext_set(output_basename, ".cladogram.pdf")
+
+cat(paste0("![Cladogram of taxa associated with ", grouping_parameter, "](", lefse.cladogram, ")"), fill = FALSE)
+```
+
+# Separate plots for each significant taxon
+
+```{bash}
+mkdir -p ${BASENAME}_individual_taxon_plots
+
+plot_features.py ${BASENAME}.in ${BASENAME}.res ${BASENAME}_individual_taxon_plots/
+```
+
+```{r}
+taxon_plots = paste0(output_basename, "_individual_taxon_plots")
+
+for (curplot in list.files(taxon_plots, full.names = TRUE)){
+  cat(paste0("![Individual Taxon Associated With ", grouping_parameter, "](", curplot, ")"), fill = FALSE)
+}
+```
+
+```{r}
+sessionInfo()
+```
+

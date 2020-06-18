@@ -1,0 +1,193 @@
+---
+title: "Oysters_DiversityEstimation"
+author: "Winston Liu"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(vegan)
+```
+
+```{r}
+output.dir <- "/sharedspace/oysters/output"
+oysters.ps.file <- "/sharedspace/oysters/output/ps_oysters_clean.rds"
+```
+
+```{r}
+oysters.ps <- read_rds(oysters.ps.file)
+oysters.ps %>% sample_data
+```
+
+
+#Absolute Abundance plot
+```{r}
+plot_bar(oysters.ps, x = "Sample", fill="Kingdom") +
+  geom_bar(aes(color=Kingdom, fill=Kingdom), stat="identity", position="stack") +
+  facet_grid(~Type+Location, scales = "free_x", space = "free_x")
+```
+
+# Alpha Diversity plots
+```{r}
+plot_richness(oysters.ps, x = "Description",
+              measures=c("Simpson", "Chao1"), col="Location") + 
+  geom_boxplot() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust=1))
+```
+
+
+```{r}
+estimate_richness(oysters.ps, measures = c("Observed","Simpson","Chao1","ACE")) %>%
+  select_if(!grepl("se\\.",names(.))) %>%
+  mutate(sampleID = rownames(.))
+```
+
+
+# Relative Abundance plots
+
+```{r}
+oysters.ps.rel  <- transform_sample_counts(oysters.ps, function(x) x / sum(x) )
+rowSums(otu_table(oysters.ps.rel))
+```
+
+```{r}
+plot_bar(oysters.ps.rel, fill = "Phylum") +
+  geom_bar(aes(color=Phylum), stat="identity", position="stack") +
+  labs(y = "Relative Abundance") +
+  facet_grid(~Type+Location,scales = "free_x", space = "free_x") +
+  theme_classic() +
+  theme(legend.position = "none")
+```
+
+# Pruning Taxa: Per sample absolute abundance
+
+```{r}
+min_n = 5
+min_samples = 10
+
+oysters.ps %>%
+  filter_taxa(function(x) sum(x >= min_n) >= min_samples,
+                       prune=TRUE) %>%
+  taxa_names %>%
+  prune_taxa(oysters.ps.rel) ->
+  oysters.prune_abs.ps
+
+ntaxa(oysters.ps.rel)
+```
+
+```{r}
+plot_bar(oysters.prune_abs.ps, fill = "Family") +
+  geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack") +
+  labs(y = "Relative Abundance") +
+  facet_grid(~Type+Location, scales = "free_x", space = "free_x")
+
+plot_bar(oysters.prune_abs.ps, fill = "Family") +
+  geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack") +
+  labs(y = "Relative Abundance") +
+  facet_grid(~Type+Location, scales = "free_x", space = "free_x")+
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 90, hjust=1))
+```
+
+
+# NMDS
+
+```{r}
+sample_min_count = 50
+
+oysters.ps %>%
+  prune_samples(sample_sums(.)>=sample_min_count, .) ->
+  oysters.sample_prune
+
+sample_sums(oysters.sample_prune) %>% sort
+```
+
+```{r}
+min_count = 3
+min_sample = 2
+
+oysters.vec = filter_taxa(oysters.sample_prune, 
+                       function(x) sum(x >= min_count) >= min_sample)
+sum(oysters.vec)
+```
+
+```{r}
+oysters.even = transform_sample_counts(oysters.sample_prune, function(x) 1E6 * x/sum(x))
+
+oysters.st_prune.even = prune_taxa(oysters.vec, oysters.even)
+ntaxa(oysters.st_prune.even)
+```
+
+## Bray-curtis and NMDS
+```{r}
+set.seed(1)
+oysters.st_prune.even.nmds_bc <- ordinate(oysters.st_prune.even, "NMDS", "bray")
+```
+
+```{r}
+cat("Converged?", oysters.st_prune.even.nmds_bc$converged, fill=TRUE)
+```
+
+```{r}
+cat("Stress:", oysters.st_prune.even.nmds_bc$stress, fill=TRUE)
+```
+
+## NMDS Scree Plot
+```{r}
+mds_stress_dplyr = function(df,rep_num, dimensions) {
+  mds_result = metaMDS(df, autotransform=TRUE, k=dimensions)
+  return(mds_result$stress)
+}
+set.seed(1)
+scree.df = expand.grid(repnum=seq(1), dimensions=seq(6)) %>% 
+  rowwise() %>% 
+  mutate(stress = mds_stress_dplyr(otu_table(oysters.st_prune.even), repnum, dimensions))
+```
+
+```{r}
+plot_ordination(oysters.st_prune.even, 
+                oysters.st_prune.even.nmds_bc, 
+                shape="Type", color="Location") +
+  annotate("text",x=-Inf,y=3,hjust=0,vjust=0,
+           label= paste("Stress:", oysters.st_prune.even.nmds_bc$stress, 
+                        "\nConverged:", oysters.st_prune.even.nmds_bc$converged)) +
+  theme_minimal()
+
+```
+
+## PCoA
+```{r}
+oysters.st_prune.even.pcoa_bc <- ordinate(oysters.st_prune.even, "PCoA", "bray")
+plot_ordination(oysters.st_prune.even, oysters.st_prune.even.pcoa_bc, shape="Type", color="Location") +
+  theme_minimal()
+```
+
+```{r}
+oysters.ps %>% sample_data
+```
+
+```{r}
+oysters.ps %>% subset_samples( Original.Sample.Name == "1") -> oysters.subset
+```
+
+```{r}
+oysters.ps %>% tax_table ->a
+str(a)
+colSums(is.na(a)) / nrow(a)
+nrow(a)
+```
+
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,30 @@
+---
+title: "AtacamaOystersCompar"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+ATdata = readRDS("/data/tutorial_data/lemur_full_phyloseq.rds")
+
+AT.count = as.data.frame(cbind(t(otu_table(ATdata, taxa_are_rows = F)),tax_table(ATdata)))
+
+sum(is.na(AT.count$Genus))
+
+2032/5073
+
+```
+
+```{r}
+Oydata = readRDS("/sharedspace/oysters/output/ps_oysters_clean.rds")
+
+Oy.count = as.data.frame(cbind(t(otu_table(Oydata, taxa_are_rows = F)),tax_table(Oydata)))
+
+sum(is.na(Oy.count$Genus))
+
+5289/7207
+
+```
+

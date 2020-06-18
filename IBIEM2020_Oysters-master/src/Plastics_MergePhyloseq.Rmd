@@ -1,0 +1,128 @@
+---
+title: "Plastics_MergingPhyloseqObjects"
+author: "Winston Liu"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(vegan)
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+excelFile <- "/sharedspace/oysters/plastics/rittschof/sample_sheet_order_4522.xls"
+output.dir <- "/sharedspace/oysters/plastics/output"
+trackR1.file <- "track_track_Jan2018.rds"
+trackR2.file <- "track_plastics_May2018.rds"
+plasticsR1.file <- "ps_plastics_Jan2018.rds"
+plasticsR2.file <- "ps_plastics_May2018.rds"
+```
+
+```{r}
+run1.ps <- read_rds(file.path(output.dir,plasticsR1.file))
+run2.ps <- read_rds(file.path(output.dir,plasticsR2.file))
+run1.track <- read_rds(file.path(output.dir,trackR1.file))
+run2.track <- read_rds(file.path(output.dir,trackR2.file))
+```
+
+
+```{r}
+run1.track %>%
+  separate(sample, into = c("sample"),sep = "_") %>%
+  filter(!is.na(denoised)) %>%
+  select(sample,denoised,merged,tabled,nochim) ->
+  run1.track.1
+
+run1.track %>%
+  separate(sample, into = c("sample"),sep = "_") %>%
+  filter(is.na(denoised)) %>%
+  select(sample,input,filtered) %>%
+  left_join(run1.track.1) ->
+  run1.track.clean
+
+```
+
+```{r}
+run2.track %>%
+  filter(!is.na(denoised)) %>%
+  select(sample,denoised,merged,tabled,nochim)->
+  run2.b
+  
+
+run2.track %>%
+  filter(is.na(denoised)) %>%
+  select(sample,input,filtered)->
+  run2.a
+dayNum <- as.numeric(str_extract(run2.a$sample, "[0-9]+"))
+plasticType <- (str_extract(run2.a$sample, "[aA-zZ]+"))
+sampleName <- paste(plasticType,dayNum, sep = "-")
+run2.a$sample <- sampleName
+
+run2.a %>%
+  left_join(run2.b) ->
+  run2.track.clean
+```
+```{r}
+run1.track.clean
+write_rds(run1.track.clean,"/sharedspace/oysters/plastics/output/track_plastics_Jan2018_clean.rds")
+```
+
+```{r}
+run2.track.clean 
+write_rds(run1.track.clean,"/sharedspace/oysters/plastics/output/track_plastics_May2018_clean.rds")
+```
+
+# Add sample table to phyloseq object
+```{r}
+rownames(otu_table(run1.ps))
+```
+
+```{r}
+run1.ps %>% otu_table %>% rownames %>%
+  as.data.frame->
+  run1.sampleInfo
+colnames(run1.sampleInfo) = "sampleName"
+
+matchtable <-  read_xls(excelFile, skip = 3)[,c(1,16),]
+colnames(matchtable) <- c("sampleName","sampleID")
+
+run1.sampleInfo %>% 
+  left_join(matchtable) %>%
+  separate(sampleID,into=c("PlasticType","Day")) %>%
+  mutate(RunDate = "Jan2018") %>%
+  column_to_rownames("sampleName") %>%
+  sample_data ->
+  run1.sampleData
+
+run1.ps.sd <- merge_phyloseq(run1.ps,run1.sampleData)
+write_rds(run1.ps.sd, "/sharedspace/oysters/plastics/output/ps_plastics_Jan2018_sampleData.rds")
+```
+
+```{r}
+run2.ps %>% otu_table %>% rownames %>%
+  as_data_frame %>%
+  separate(value, into = c("PlasticType", "Day"), remove=FALSE) %>%
+  mutate(RunDate = "May2018") %>%
+  column_to_rownames("value") ->
+  run2.sampleTable
+```
+
+```{r}
+run2.ps.sd <- merge_phyloseq(run2.ps,sample_data(run2.sampleTable))
+write_rds(run2.ps.sd, "/sharedspace/oysters/plastics/output/ps_plastics_May2018_sampleData.rds")
+```
+
+```{r}
+merged.ps <- merge_phyloseq(run1.ps.sd,run2.ps.sd)
+write_rds(merged.ps, "/sharedspace/oysters/plastics/output/ps_plastics_merged.rds")
+```

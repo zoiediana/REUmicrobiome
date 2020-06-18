@@ -1,0 +1,200 @@
+---
+title: "Plastics_DiversityEstimation"
+author: "Winston Liu"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(vegan)
+```
+
+```{r}
+output.dir <- "/sharedspace/oysters/plastics/output"
+trackR1.file <- "track_plastics_Jan2018_clean.rds"
+trackR2.file <- "track_plastics_May2018_clean.rds"
+plastics.ps.file <- "ps_plastics_merged.rds"
+```
+
+```{r}
+plastics.ps <- read_rds(file.path(output.dir,plastics.ps.file))
+run1.track <- read_rds(file.path(output.dir,trackR1.file))
+run2.track <- read_rds(file.path(output.dir,trackR2.file))
+```
+
+
+
+# View DADA2 pipeline results
+```{r}
+run1.track
+```
+
+```{r}
+run2.track
+```
+
+```{r}
+plastics.ps
+```
+
+```{r}
+plastics.ps %>% sample_data %>% arrange(PlasticType,Day)
+```
+
+```{r}
+plastics.ps %>% subset_samples(!is.na(Day)) %>% subset_samples(PlasticType %in% c("HDPE"))-> plastics.ps.2
+plastics.ps.2
+```
+
+#Absolute Abundance plot
+```{r}
+plot_bar(plastics.ps.2, x = "Sample", fill="Kingdom") +
+  geom_bar(aes(color=Kingdom, fill=Kingdom), stat="identity", position="stack") +
+  facet_grid(~RunDate, scales = "free_x", space = "free_x")
+```
+
+# Alpha Diversity plots
+```{r}
+plot_richness(plastics.ps, 
+              measures=c("Simpson", "Chao1"), col=PlasticType) + 
+  geom_boxplot() +
+  geom_point() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust=1))
+```
+
+```{r}
+plastics.ps %>% 
+  sample_data ->
+  plastics.SD2
+
+plastics.SD2 %>%
+  mutate(sampleID = rownames(plastics.SD2)) ->
+  plastics.SD
+```
+
+```{r}
+estimate_richness(plastics.ps, measures = c("Observed","Simpson","Chao1","ACE")) %>%
+  select_if(!grepl("se\\.",names(.))) %>%
+  mutate(sampleID = rownames(.))
+```
+
+
+# Relative Abundance plots
+
+```{r}
+run2.ps.rel  <- transform_sample_counts(run2.ps, function(x) x / sum(x) )
+rowSums(otu_table(run2.ps.rel))
+```
+
+```{r}
+plot_bar(run2.ps.rel, fill = "Phylum") +
+  geom_bar(aes(color=Phylum), stat="identity", position="stack") +
+  labs(y = "Relative Abundance")
+```
+
+# Pruning Taxa: Per sample absolute abundance
+
+```{r}
+min_n = 5
+min_samples = 10
+
+run2.ps %>%
+  filter_taxa(function(x) sum(x >= min_n) >= min_samples,
+                       prune=TRUE) %>%
+  taxa_names %>%
+  prune_taxa(run2.ps.rel) ->
+  run2.prune_abs.ps
+
+ntaxa(run2.ps.rel)
+```
+
+```{r}
+plot_bar(run2.prune_abs.ps, fill = "Family") +
+  geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack") +
+  labs(y = "Relative Abundance") +
+  facet_grid(~plasticType, scales = "free_x", space = "free_x")
+```
+
+
+# NMDS
+
+```{r}
+sample_min_count = 50
+
+run2.ps %>%
+  prune_samples(sample_sums(.)>=sample_min_count, .) ->
+  run2.sample_prune
+
+sample_sums(run2.sample_prune) %>% sort
+```
+
+```{r}
+min_count = 3
+min_sample = 2
+
+run2.vec = filter_taxa(run2.sample_prune, 
+                       function(x) sum(x >= min_count) >= min_sample)
+sum(run2.vec)
+```
+
+```{r}
+run2.even = transform_sample_counts(run2.sample_prune, function(x) 1E6 * x/sum(x))
+
+run2.st_prune.even = prune_taxa(run2.vec, run2.even)
+ntaxa(run2.st_prune.even)
+```
+
+## Bray-curtis and NMDS
+```{r}
+set.seed(1)
+run2.st_prune.even.nmds_bc <- ordinate(run2.st_prune.even, "NMDS", "bray")
+```
+
+```{r}
+cat("Converged?", run2.st_prune.even.nmds_bc$converged, fill=TRUE)
+```
+
+```{r}
+cat("Stress:", run2.st_prune.even.nmds_bc$stress, fill=TRUE)
+```
+
+## NMDS Scree Plot
+```{r}
+mds_stress_dplyr = function(df,rep_num, dimensions) {
+  mds_result = metaMDS(df, autotransform=TRUE, k=dimensions)
+  return(mds_result$stress)
+}
+set.seed(1)
+scree.df = expand.grid(repnum=seq(1), dimensions=seq(6)) %>% 
+  rowwise() %>% 
+  mutate(stress = mds_stress_dplyr(otu_table(run2.st_prune.even), repnum, dimensions))
+```
+
+```{r}
+plot_ordination(run2.st_prune.even, 
+                run2.st_prune.even.nmds_bc, 
+                type="plasticType", color="dayNum") +
+  annotate("text",x=-Inf,y=-Inf,hjust=0,vjust=0,
+           label= paste("Stress:", run2.st_prune.even.nmds_bc$stress, 
+                        "\nConverged:", run2.st_prune.even.nmds_bc$converged))
+```
+
+## PCoA
+```{r}
+run2.st_prune.even.pcoa_bc <- ordinate(run2.st_prune.even, "PCoA", "bray")
+plot_ordination(run2.st_prune.even, run2.st_prune.even.pcoa_bc, type="samples", color="Vegetation") 
+```
+
+```{r}
+sessionInfo()
+```
+

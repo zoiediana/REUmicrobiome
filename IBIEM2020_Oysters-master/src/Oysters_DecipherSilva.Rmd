@@ -1,0 +1,50 @@
+---
+title: "Oysters_Deciper"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(vegan)
+library(tidyverse)
+library(DECIPHER)
+library(dada2)
+```
+
+
+```{r}
+output.dir <- "/sharedspace/oysters/output"
+oysters.seqtab.file <- "/sharedspace/oysters/output/seqtab_nochim_rdp.rds"
+```
+
+```{r}
+oysters.st <- read_rds(oysters.seqtab.file)
+```
+
+```{r}
+dna <- DNAStringSet(getSequences(oysters.st)) # Create a DNAStringSet from the ASVs
+load("/sharedspace/oysters/ref/SILVA_SSU_r138_2019.RData") # CHANGE TO THE PATH OF YOUR TRAINING SET
+ids <- IdTaxa(dna, trainingSet, strand="both", processors=NULL, verbose=FALSE) # use all processors
+ranks <- c("domain", "phylum", "class", "order", "family", "genus", "species") # ranks of interest
+# Convert the output object of class "Taxa" to a matrix analogous to the output from assignTaxonomy
+taxid <- t(sapply(ids, function(x) {
+        m <- match(ranks, x$rank)
+        taxa <- x$taxon[m]
+        taxa[startsWith(taxa, "unclassified_")] <- NA
+        taxa
+}))
+colnames(taxid) <- ranks; rownames(taxid) <- getSequences(oysters.st)
+write_rds(taxid,"/sharedspace/oysters/output/taxid_decipher_silva.rds")
+```
+
+```{r}
+sessionInfo()
+```
+

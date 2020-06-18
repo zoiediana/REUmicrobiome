@@ -1,0 +1,87 @@
+---
+title: "Oysters_Cleanup"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+library(ggplot2)
+library(magrittr)
+```
+
+```{r}
+output.dir <- "/sharedspace/oysters/output"
+ps.file <- file.path(output.dir,"ps_oysters.rds")
+track.file <- file.path(output.dir,"track_oysters.rds")
+track.clean.file <- file.path(output.dir,"track_oysters_clean.rds")
+oyster.sample.data <- "/sharedspace/oysters/ref/ibiem_oyster_sample_key.csv"
+ps.clean.file <- file.path(output.dir,"ps_oysters_clean.rds")
+```
+
+```{r}
+oysters.ps <- read_rds(ps.file)
+oysters.track <- read_rds(track.file)
+oyster.sd <- read_csv(oyster.sample.data)
+```
+
+```{r}
+oysters.track %>%
+  separate(sample, into = c("sample"), sep = "_")  %>%
+  filter(!is.na(denoised)) %>%
+  select(sample,denoised,merged,tabled,nochim) ->
+  oysters.track1
+
+oysters.track %>%
+  separate(sample, into = c("sample"),sep = "_") %>%
+  filter(is.na(denoised)) %>%
+  select(sample,input,filtered) %>%
+  left_join(oysters.track1) ->
+  oysters.track.clean
+```
+
+```{r}
+write_rds(oysters.track.clean, track.clean.file)
+```
+
+```{r}
+write_csv(oysters.track.clean, file.path(output.dir,"track_oysters_clean.csv"))
+```
+
+```{r}
+oyster.sd
+```
+
+
+```{r}
+oyster.sd %>%
+  column_to_rownames("sample") %>%
+  sample_data ->
+  oysters.sd.clean
+```
+
+```{r}
+oysters.ps.clean <- subset_samples(oysters.ps, !grepl("PG",R1.fileName))
+sample_data(oysters.ps.clean) <- oysters.sd.clean
+```
+
+```{r}
+oysters.ps.clean
+```
+
+```{r}
+sample_data(oysters.ps.clean)
+```
+
+```{r}
+write_rds(oysters.ps.clean, ps.clean.file)
+```
+
+```{r}
+sessionInfo()
+```
+

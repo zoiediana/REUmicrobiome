@@ -1,0 +1,59 @@
+---
+title: "Oysters_phylofactor2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(vegan)
+library(tidyverse)
+library(phylofactor)
+library(readr)
+```
+
+```{r}
+ps.oysters.filename <- "/sharedspace/oysters/output/ps.oysters.withtree.rds"
+```
+
+```{r}
+ps.pre <- read_rds(ps.oysters.filename)
+ps.pre %>% 
+  subset_samples(!Original.Sample.Name %in% c("B8","C1","C2")) %>%
+  filter_taxa(function(x) sum(x > 0) > 1, TRUE) %>% #at least two samples have the ASV
+  subset_taxa(Kingdom == "Bacteria") %>%
+  subset_taxa(!is.na(Phylum)) %>%
+  subset_taxa(Order != "Chloroplast" | is.na(Order)) -> 
+  ps
+```
+
+```{r}
+ps %>% subset_samples(Type == "Shell") %>% filter_taxa(function(x) sum(x > 0) > 0, TRUE) -> ps.shells
+ps %>% sample_data() %>% mutate_if(is.character,str_replace_all,"DUML","Natural") -> sample2
+sample2 %>% select(Type,Location) %>% mutate(Type = as.factor(Type), Location = as.factor(Location)) -> sample2
+
+ps.shells %>% sample_data() %>% select(Location) -> a
+a$Location %>% as.factor -> shell.loc
+```
+
+```{r}
+PF2 <- PhyloFactor(t(otu_table(ps.shells)),
+                  phy_tree(ps.shells),
+                  shell.loc)
+
+write_rds(PF2,"/sharedspace/oysters/output/pf_shells.rds")
+
+PF.double2 <- PhyloFactor(t(otu_table(ps)),
+                  phy_tree(ps),
+                  X = sample2,
+                  frmla = Data ~ Type * Location)
+```
+
+```{r}
+write_rds(PF.double2,"/sharedspace/oysters/output/pf_double.rds")
+```
+
+
