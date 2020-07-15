@@ -1,0 +1,36 @@
+# REU DADA2 Workflow
+# June 2020
+# Author: Kyle Spitler
+
+#clear R brain
+rm(list=ls())
+
+ps.filename <- "~/Desktop/DukeREU/FastQ_Files/Micro_F/Combined/output/ps_Com.rds"
+ps <- read_rds(ps.filename)
+
+sample_data(ps)
+
+ps_phylum <- ps %>%
+  tax_glom(taxrank = "Phylum") %>%                     
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% 
+  psmelt() %>%                                         
+  filter(Abundance > 0.001) %>%                         
+  arrange(Phylum)  
+
+phylum_colors <- c(
+  "#CBD588", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD",
+  "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  "#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861"
+)
+
+ggplot(na.omit(ps_phylum), aes(x = Week, y= Abundance, fill = Phylum)) + 
+  facet_grid(Type~., scale="free_y", drop= TRUE) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = phylum_colors) +
+  scale_x_discrete(drop = FALSE) +
+  
+  
+theme(axis.title.x = element_blank()) + 
+guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+ylab("Relative Abundance (Phyla > 0.01%) \n")
+
